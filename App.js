@@ -1,112 +1,128 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
+import Web3 from "web3";
+import EventTicketingSystem from "./contracts/EventTicketingSystem.json"; // Import the ABI file
 import "./App.css";
 
 const App = () => {
-  const [ticketPrice] = useState(50);
-  const [totalTickets] = useState(500);
-  const [remainingTickets, setRemainingTickets] = useState(500);
-  const [status, setStatus] = useState("Available");
-  const [showModal, setShowModal] = useState(false);
-  const [showSuccessModal, setShowSuccessModal] = useState(false);
-  const [purchaseSummary, setPurchaseSummary] = useState(null);
+  const [account, setAccount] = useState("");
+  const [contract, setContract] = useState(null);
+  const [web3, setWeb3] = useState(null);
+  const [ticketPrice, setTicketPrice] = useState(0);
+  const [totalTickets, setTotalTickets] = useState(0);
+  const [availableTickets, setAvailableTickets] = useState(0);
+  const [purchaseQuantity, setPurchaseQuantity] = useState("");
+  const [refundQuantity, setRefundQuantity] = useState("");
+  const [status, setStatus] = useState("");
 
-  const handlePurchase = (quantity) => {
-    const qty = parseInt(quantity, 10);
-    if (qty > 0 && qty <= remainingTickets) {
-      const totalCost = qty * ticketPrice;
-      setPurchaseSummary({ qty, totalCost });
-      setShowModal(true); 
+  // Initialize Web3 and load contract
+  useEffect(() => {
+    const init = async () => {
+      try {
+        // Connect to Ganache
+        const web3 = new Web3("http://127.0.0.1:7545");
+        setWeb3(web3);
+
+        // Get accounts
+        const accounts = await web3.eth.getAccounts();
+        setAccount(accounts[0]);
+
+        // Get the deployed contract instance
+        const networkId = await web3.eth.net.getId();
+        const deployedNetwork = EventTicketingSystem.networks[networkId];
+        const contractInstance = new web3.eth.Contract(
+          EventTicketingSystem.abi,
+          deployedNetwork && deployedNetwork.address
+        );
+        setContract(contractInstance);
+
+        // Fetch initial data from the contract
+        const price = await contractInstance.methods.ticketPrice().call();
+        const total = await contractInstance.methods.totalTickets().call();
+        const available = await contractInstance.methods.availableTickets().call();
+
+        setTicketPrice(web3.utils.fromWei(price, "ether"));
+        setTotalTickets(total);
+        setAvailableTickets(available);
+        setStatus(available > 0 ? "Available" : "Sold Out");
+      } catch (error) {
+        console.error("Error connecting to contract or blockchain:", error);
+      }
+    };
+
+    init();
+  }, []);
+
+  // Handle ticket purchase
+  const handlePurchase = async () => {
+    const quantity = parseInt(purchaseQuantity, 10);
+    if (quantity > 0 && quantity <= availableTickets) {
+      try {
+        const totalCost = web3.utils.toWei((quantity * ticketPrice).toString(), "ether");
+        await contract.methods.purchaseTickets(quantity).send({
+          from: account,
+          value: totalCost,
+        });
+        const available = await contract.methods.availableTickets().call();
+        setAvailableTickets(available);
+        setStatus(available > 0 ? "Available" : "Sold Out");
+        alert(`Successfully purchased ${quantity} ticket(s)!`);
+      } catch (error) {
+        console.error("Error purchasing tickets:", error);
+        alert("Transaction failed! Please try again.");
+      }
     } else {
-      alert("Invalid quantity or insufficient tickets!");
+      alert("Invalid quantity or insufficient tickets available.");
     }
   };
 
-  const handleRefund = (quantity) => {
-    const qty = parseInt(quantity, 10);
-    if (qty > 0 && qty <= totalTickets - remainingTickets) {
-      setRemainingTickets(remainingTickets + qty);
-      setStatus(remainingTickets + qty === totalTickets ? "Available" : "Available");
-      alert(`Successfully refunded ${qty} tickets.`);
-    } else {
-      alert("Invalid quantity or no tickets to refund!");
+  // Handle ticket refund
+  const handleRefund = async () => {
+    const quantity = parseInt(refundQuantity, 10);
+    try {
+      await contract.methods.refund(quantity).send({ from: account });
+      const available = await contract.methods.availableTickets().call();
+      setAvailableTickets(available);
+      setStatus(available > 0 ? "Available" : "Sold Out");
+      alert(`Successfully refunded ${quantity} ticket(s)!`);
+    } catch (error) {
+      console.error("Error refunding tickets:", error);
+      alert("Refund failed! Please try again.");
     }
-  };
-  
-
-  const confirmPurchase = () => {
-    setRemainingTickets(remainingTickets - purchaseSummary.qty);
-    setStatus(remainingTickets - purchaseSummary.qty === 0 ? "Sold Out" : "Available");
-    setShowModal(false); 
-    setShowSuccessModal(true); 
   };
 
   return (
     <div className="app">
       <h1>Event Ticketing System</h1>
       <div className="info-section">
-        <h3>Event Information</h3>
-        <p>Ticket Price: ${ticketPrice}.00</p>
+        <p>Connected Account: {account}</p>
+        <p>Ticket Price: {ticketPrice} ETH</p>
         <p>Total Tickets: {totalTickets}</p>
-        <p>Tickets Remaining: {remainingTickets}</p>
-        <p>Event Status: {status}</p>
+        <p>Available Tickets: {availableTickets}</p>
+        <p>Status: {status}</p>
       </div>
       <div className="form-section">
         <h2>Purchase Tickets</h2>
         <input
           type="number"
-          placeholder="Enter quantity"
-          id="purchaseQuantity"
+          placeholder="Quantity"
+          value={purchaseQuantity}
+          onChange={(e) => setPurchaseQuantity(e.target.value)}
         />
-        <button
-          onClick={() =>
-            handlePurchase(document.getElementById("purchaseQuantity").value)
-          }
-        >
-          Purchase
-        </button>
+        <button onClick={handlePurchase}>Purchase</button>
       </div>
       <div className="form-section">
-        <h2>Organizer Actions</h2>
-        <div className="button-container">
-          <button onClick={() => setStatus("Event Closed")}>Close Event</button>
-          <button onClick={() => alert("Funds withdrawn successfully!")}>
-            Withdraw Funds
-          </button>
-        </div>
+        <h2>Refund Tickets</h2>
+        <input
+          type="number"
+          placeholder="Quantity"
+          value={refundQuantity}
+          onChange={(e) => setRefundQuantity(e.target.value)}
+        />
+        <button onClick={handleRefund}>Refund</button>
       </div>
-      <div className="info-section">
-        <h2>Refund Policy</h2>
-        <p>You can request a refund up to 5 days before the event.</p>
-      </div>
-
-      
-      {showModal && (
-        <div className="modal">
-          <div className="modal-content">
-            <h2>Purchase Summary</h2>
-            <p>Tickets Purchased: {purchaseSummary.qty}</p>
-            <p>Total Price: ${purchaseSummary.totalCost}.00</p>
-            <div className="modal-actions">
-              <button onClick={confirmPurchase}>Confirm</button>
-              <button onClick={() => setShowModal(false)}>Cancel</button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      
-      {showSuccessModal && (
-        <div className="modal">
-          <div className="modal-content success-modal">
-            <div className="success-icon">✔️</div>
-            <h2>Purchase Successful!</h2>
-            <p>Your tickets have been successfully purchased.</p>
-            <button onClick={() => setShowSuccessModal(false)}>Close</button>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
 
 export default App;
+

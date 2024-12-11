@@ -3,10 +3,12 @@ pragma solidity ^0.8.0;
 
 contract EventTicketingSystem {
     address public eventOrganizer;
-    uint public ticketPrice;
+    string public eventName;
+    uint public ticketPrice; // Price in Wei
     uint public availableTickets;
     uint public totalTickets;
     uint public priceReductionTimestamp;
+    uint public oldTicketPrice;
 
     struct TicketHolder {
         uint ticketCount;
@@ -16,16 +18,19 @@ contract EventTicketingSystem {
     mapping(address => TicketHolder) public ticketHolders;
     mapping(address => uint) public purchaseHistory;
     mapping(address => bool) public eligibleForRefund;
+    address[] public buyers; // To track all buyers
 
     event EventCreated(string eventName, uint totalTickets);
-    event TicketPurchased(address buyer, uint numberOfTickets);
+    event TicketPurchased(address buyer, uint numberOfTickets, uint refundEligibility);
     event TicketTransferred(address from, address to, uint numberOfTickets);
     event RefundProcessed(address recipient, uint refundAmount);
     event TicketSentViaEmail(address recipient, string email);
+    event FundsWithdrawn(uint amount);
 
-    constructor(uint _ticketPrice, uint _totalTickets) {
+    constructor(string memory _eventName, uint _ticketPriceInEther, uint _totalTickets) {
         eventOrganizer = msg.sender;
-        ticketPrice = _ticketPrice;
+        eventName = _eventName;
+        ticketPrice = _ticketPriceInEther * 1 ether; // Convert Ether to Wei
         availableTickets = _totalTickets;
         totalTickets = _totalTickets;
     }
@@ -45,23 +50,34 @@ contract EventTicketingSystem {
         _;
     }
 
-    function createEvent(string memory eventName) public onlyOrganizer {
+    function createEvent() public onlyOrganizer {
         availableTickets = totalTickets;
         emit EventCreated(eventName, totalTickets);
     }
 
     function purchaseTickets(uint quantity) public payable checkTicketsAvailable(quantity) checkPayment(quantity) {
+        // Add buyer to the list if not already present
+        if (!ticketHolders[msg.sender].exists) {
+            buyers.push(msg.sender);
+            ticketHolders[msg.sender].exists = true;
+        }
+
         ticketHolders[msg.sender].ticketCount += quantity;
         availableTickets -= quantity;
         purchaseHistory[msg.sender] += msg.value;
-        emit TicketPurchased(msg.sender, quantity);
+
+        // Emit purchase event with refund eligibility if price changes
+        uint refundEligibility = eligibleForRefund[msg.sender] ? ticketPrice - oldTicketPrice : 0;
+        emit TicketPurchased(msg.sender, quantity, refundEligibility);
     }
 
     function transferTicket(address to, uint quantity) public {
         require(ticketHolders[msg.sender].ticketCount >= quantity, "You have no tickets to transfer.");
+        require(to != address(0), "Invalid recipient address.");
 
         ticketHolders[msg.sender].ticketCount -= quantity;
         ticketHolders[to].ticketCount += quantity;
+
         emit TicketTransferred(msg.sender, to, quantity);
     }
 
@@ -71,40 +87,44 @@ contract EventTicketingSystem {
 
     function sendTicketsViaEmail(address recipient, string memory email) public {
         require(ticketHolders[recipient].ticketCount > 0, "No tickets to send.");
-
         emit TicketSentViaEmail(recipient, email);
     }
 
-    // Organizer can reduce the price before the event
-    function reduceTicketPrice(uint newPrice) public onlyOrganizer {
-        require(newPrice < ticketPrice, "New price must be lower.");
-        ticketPrice = newPrice;
+    function reduceTicketPrice(uint newPriceInEther) public onlyOrganizer {
+        require(newPriceInEther * 1 ether < ticketPrice, "New price must be lower.");
+
+        oldTicketPrice = ticketPrice; // Store old price for refund calculations
+        ticketPrice = newPriceInEther * 1 ether;
         priceReductionTimestamp = block.timestamp;
+
         markRefundEligible();
     }
 
-    // Check for refund eligibility when price is reduced
     function markRefundEligible() internal {
-        // Functionality not fully implemented as iteration over mappings in Solidity is not straightforward
+        for (uint i = 0; i < buyers.length; i++) {
+            eligibleForRefund[buyers[i]] = true;
+        }
     }
 
-    // Process refund if ticket price reduced
     function refund() public {
         require(eligibleForRefund[msg.sender], "You are not eligible for a refund.");
-        uint refundAmount = purchaseHistory[msg.sender] - ticketPrice;
-        payable(msg.sender).transfer(refundAmount);
-        eligibleForRefund[msg.sender] = false;
+        require(ticketHolders[msg.sender].ticketCount > 0, "You have no tickets to refund.");
 
+        uint refundAmount = ticketHolders[msg.sender].ticketCount * (oldTicketPrice - ticketPrice);
+        payable(msg.sender).transfer(refundAmount);
+
+        eligibleForRefund[msg.sender] = false;
         emit RefundProcessed(msg.sender, refundAmount);
     }
 
-    // Allow the organizer to withdraw remaining funds after the event
     function withdrawFunds() public onlyOrganizer {
         uint balance = address(this).balance;
         require(balance > 0, "No funds to withdraw.");
         payable(eventOrganizer).transfer(balance);
+        emit FundsWithdrawn(balance);
     }
 
     // Fallback function to accept Ether
     receive() external payable {}
 }
+
